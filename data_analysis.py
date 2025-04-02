@@ -1,82 +1,86 @@
-import dash
-from dash import dcc, html, dash_table
-import pandas as pd
-import plotly.express as px
-from dash.dependencies import Input, Output
-import dash_uploader as du
 import os
-from flask import Flask
-from google.colab.output import eval_js
-from pyngrok import ngrok
+import glob
+import pandas as pd
+from datetime import datetime
+from google.colab import files
 
-# Configurar Flask e Dash
-server = Flask(__name__)
-app = dash.Dash(__name__, server=server)
+def obter_data_hoje():
+    return datetime.today().strftime("%d-%m-%Y")
 
-# Configuração do diretório de upload
-UPLOAD_FOLDER = "./uploads"
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+data_hoje = obter_data_hoje()
+uploaded = files.upload()
 
-du.configure_upload(app, UPLOAD_FOLDER)
+# Mover o arquivo para a pasta 'uploads'
+for filename in uploaded.keys():
+    os.rename(filename, os.path.join("uploads", filename))
 
-# Layout do aplicativo
-app.layout = html.Div([
-    html.H1("Análise de Dados com Dash"),
-    du.Upload(id='upload-data', text='Arraste e solte ou clique para fazer upload',
-              text_completed='Upload completo: {filename}', max_files=1),
-    dcc.Dropdown(id='column-selector', multi=True, placeholder="Selecione as colunas"),
-    dcc.Dropdown(id='filter-column', placeholder="Selecione a coluna para filtrar"),
-    dcc.Input(id='filter-value', type='text', placeholder='Valor do filtro'),
-    html.Button('Aplicar Filtro', id='apply-filter', n_clicks=0),
-    dash_table.DataTable(id='data-table', page_size=10),
-    dcc.Graph(id='data-graph')
-])
+print("Arquivo(s) movido(s) para 'uploads/'!")
+print("Arquivos na pasta 'uploads/':")
+print(os.listdir("uploads/"))
 
-# Callback para carregar o arquivo e popular as colunas
-@app.callback(
-    [Output('column-selector', 'options'), Output('filter-column', 'options')],
-    Input('upload-data', 'isCompleted'),
-    prevent_initial_call=True
-)
-def load_file(is_completed):
-    if is_completed:
-        # Filtrar apenas arquivos Excel no diretório de uploads
-        excel_files = [f for f in os.listdir(UPLOAD_FOLDER) if f.endswith('.xlsx')]
-        if not excel_files:
-            return [], []
-        
-        file_path = os.path.join(UPLOAD_FOLDER, excel_files[0])
-        df = pd.read_excel(file_path)
-        options = [{'label': col, 'value': col} for col in df.columns]
-        return options, options
-    return [], []
+# Diretórios de entrada e saída
+UPLOAD_FOLDER = "uploads"
+OUTPUT_FOLDER = "outputs"
 
-# Callback para aplicar filtro e atualizar gráficos
-@app.callback(
-    [Output('data-table', 'data'), Output('data-graph', 'figure')],
-    [Input('apply-filter', 'n_clicks')],
-    [dash.dependencies.State('filter-column', 'value'), dash.dependencies.State('filter-value', 'value'),
-     dash.dependencies.State('upload-data', 'isCompleted')],
-    prevent_initial_call=True
-)
-def filter_data(n_clicks, column, value, is_completed):
-    if is_completed:
-        excel_files = [f for f in os.listdir(UPLOAD_FOLDER) if f.endswith('.xlsx')]
-        if not excel_files:
-            return [], {}
-        
-        file_path = os.path.join(UPLOAD_FOLDER, excel_files[0])
-        df = pd.read_excel(file_path)
+# Criar diretórios se não existirem
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-        if column and value:
-            df = df[df[column].astype(str).str.contains(value, case=False, na=False)]
+# Parâmetros permitidos
+COLUNAS_PERMITIDAS = [
+    "cliente_id", "chamado_id", "cidade", "carimbo_baixa_problema",
+    "onu_substituida", "roteador_substituido", "modelo_roteador",
+    "PROTOCOLO", "CONTRATO INTERNET", "CIDADE", "MODELO ONU",
+    "MODELO CPE", "ETIQUETAS", "CATEGORIAS DE ETIQUETA"
+]
 
-        fig = px.histogram(df, x=column) if column else px.histogram(df)
-        return df.to_dict('records'), fig
-    return [], {}
+CATEGORIAS_PERMITIDAS = [
+    "Instabilidade na conexão", "Roteador com defeito",
+    "Equipamento brisanet sem gerência/sem acesso", "Sem WIFI",
+    "Velocidade abaixo da contratada", "Quantidade de pontos WIFI insuficientes"
+]
 
-# Iniciar ngrok e rodar o servidor
-public_url = ngrok.connect(8050).public_url
-print(f"Acesse o app aqui: {public_url}")
-app.run(host='0.0.0.0', port=8050, debug=True)
+# Buscar arquivo XLSX na pasta de upload
+file_list = glob.glob(os.path.join(UPLOAD_FOLDER, "*.xlsx"))
+if not file_list:
+    print("❌ Erro: Nenhum arquivo XLSX encontrado na pasta de uploads.")
+    exit()
+
+file_path = file_list[0]
+print(f"📂 Processando arquivo: {file_path}")
+
+try:
+    xls = pd.ExcelFile(file_path)
+    sheets = {}
+
+    for sheet_name in xls.sheet_names:
+        df = xls.parse(sheet_name)
+
+        # Manter apenas as colunas desejadas
+        colunas_validas = [col for col in df.columns if col in COLUNAS_PERMITIDAS]
+        df = df[colunas_validas]
+
+        # Filtrar categorias desejadas, se a coluna existir
+        if "carimbo_baixa_problema" in df.columns:
+            df = df[df["carimbo_baixa_problema"].isin(CATEGORIAS_PERMITIDAS)]
+
+        sheets[sheet_name] = df
+
+    # Salvar novo arquivo XLSX
+    output_path = os.path.join(OUTPUT_FOLDER, f"dados_tratados_{data_hoje}.xlsx")
+    with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
+        for sheet, data in sheets.items():
+            data.to_excel(writer, sheet_name=sheet, index=False)
+
+    print(f"✅ Processamento concluído. Arquivo salvo em: {output_path}")
+
+
+    # Caminho do arquivo tratado
+    output_file = f"outputs/dados_tratados_{data_hoje}.xlsx"
+
+    # Baixar o arquivo
+    files.download(output_file)
+
+
+except Exception as e:
+    print(f"⚠️ Erro ao processar o arquivo: {str(e)}")

@@ -60,11 +60,16 @@ try:
         colunas_validas = [col for col in df.columns if col in COLUNAS_PERMITIDAS]
         df = df[colunas_validas]
 
+        # Remover linhas onde modelo_roteador é nulo
+        if "modelo_roteador" in df.columns:
+            df = df.dropna(subset=["modelo_roteador"])
+
         # Filtrar categorias desejadas, se a coluna existir
         if "carimbo_baixa_problema" in df.columns:
             df = df[df["carimbo_baixa_problema"].isin(CATEGORIAS_PERMITIDAS)]
 
         sheets[sheet_name] = df
+
 
     # Salvar novo arquivo XLSX
     output_path = os.path.join(OUTPUT_FOLDER, f"dados_tratados_{data_hoje}.xlsx")
